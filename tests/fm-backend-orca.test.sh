@@ -344,6 +344,28 @@ test_kill_is_best_effort_close() {
   pass "fm_backend_orca_kill: calls terminal close and stays best-effort"
 }
 
+test_orca_worktree_id_valid_accepts_real_compound_shape() {
+  local ok
+  ok=$( bash -c '
+    . "$0/bin/fm-backend.sh"
+    accept() { fm_backend_orca_worktree_id_valid "$1" || { printf "rejected-valid: %s\n" "$1"; exit 1; }; }
+    reject() { ! fm_backend_orca_worktree_id_valid "$1" || { printf "accepted-invalid: %s\n" "$1"; exit 1; }; }
+    # The real shape Orca emits as a worktree "id": <repo-id>::<absolute path>.
+    accept "61b0987b-76f0-4cfc-969d-fcfe4c98a6f7::/home/tom/orca/workspaces/proj/fm-task"
+    # A plain atom stays valid so simpler recorded ids keep working.
+    accept "wt-teardown"
+    reject ""
+    reject "61b0987b::relative/path"
+    reject "61b0987b::/home/tom/a b"
+    reject "61b0987b::/home/\$(whoami)"
+    reject "61b0987b::/home/tom;touch pwned"
+    reject "bad id::/home/tom"
+    printf all-good
+  ' "$ROOT" 2>&1 )
+  [ "$ok" = all-good ] || fail "Orca worktree id validation is wrong: $ok"
+  pass "fm_backend_orca_worktree_id_valid: accepts Orca's compound id, still rejects unsafe values"
+}
+
 test_remove_worktree_refuses_empty_id() {
   local out status
   orca_case remove-empty
@@ -829,6 +851,41 @@ test_scout_teardown_removes_orca_worktree_via_helper() {
     "teardown did not remove the Orca worktree through orca worktree rm"
   assert_absent "$state/$id.meta" "teardown should remove task metadata"
   pass "fm-teardown.sh backend=orca: scout report gate then helper-backed worktree removal"
+}
+
+test_scout_teardown_removes_orca_worktree_with_compound_id() {
+  local proj wt data state config id wt_id out rc neutral
+  id="orcateardowncompoundz9"
+  proj="$TMP_ROOT/teardown-compound-project"
+  wt="$TMP_ROOT/teardown-compound-wt"
+  data="$TMP_ROOT/teardown-compound-data"
+  state="$TMP_ROOT/teardown-compound-state"
+  config="$TMP_ROOT/teardown-compound-config"
+  # The id shape Orca actually records for a managed worktree.
+  wt_id="61b0987b-76f0-4cfc-969d-fcfe4c98a6f7::$wt"
+  fm_git_worktree "$proj" "$wt" "fm/$id"
+  mkdir -p "$data/$id" "$state" "$config"
+  printf 'report\n' > "$data/$id/report.md"
+  touch "$state/.last-watcher-beat"
+  fm_write_meta "$state/$id.meta" \
+    "window=fm-$id" "endpoint_task_id=$id" "terminal=term-teardown-compound" "worktree=$wt" "project=$proj" \
+    "harness=claude" "kind=scout" "mode=no-mistakes" "yolo=off" \
+    "backend=orca" "orca_worktree_id=$wt_id" \
+    "decisions_reviewed=1" "decision_keys="
+  orca_case teardown-compound
+  printf '{"ok":true,"result":{"worktree":{"id":"%s","path":"%s"}}}\n' "$wt_id" "$wt" > "$RESP/1.out"
+  neutral=$(neutral_fm_root "$CASE_DIR/neutral")
+  set +e
+  out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
+    FM_ROOT_OVERRIDE="$neutral" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
+    "$ROOT/bin/fm-teardown.sh" "$id" 2>&1 )
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "Orca teardown should accept Orca's own compound worktree id"$'\n'"$out"
+  assert_contains "$(cat "$LOG")" $'orca\x1f''worktree'$'\x1f''rm'$'\x1f''--worktree'$'\x1f'"id:$wt_id"$'\x1f''--force'$'\x1f''--json' \
+    "teardown did not remove the Orca worktree using its compound id"
+  assert_absent "$state/$id.meta" "teardown should remove task metadata"
+  pass "fm-teardown.sh backend=orca: tears down a task recorded with Orca's compound worktree id"
 }
 
 test_scout_teardown_refuses_orca_id_path_mismatch() {
@@ -1322,6 +1379,7 @@ test_send_key_enter_and_interrupt
 test_send_key_refuses_unknown_key
 test_send_key_refuses_escape_until_supported
 test_kill_is_best_effort_close
+test_orca_worktree_id_valid_accepts_real_compound_shape
 test_remove_worktree_refuses_empty_id
 test_remove_worktree_rejects_orca_error_json
 test_worktree_path_resolves_id
@@ -1341,6 +1399,7 @@ test_peek_send_and_crew_state_route_through_orca_meta
 test_peek_and_crew_state_fail_closed_on_orca_error_json
 test_target_exists_rejects_orca_error_json
 test_scout_teardown_removes_orca_worktree_via_helper
+test_scout_teardown_removes_orca_worktree_with_compound_id
 test_scout_teardown_refuses_orca_id_path_mismatch
 test_teardown_removes_orca_worktree_when_path_missing
 test_teardown_preserves_metadata_when_orca_remove_error_json
