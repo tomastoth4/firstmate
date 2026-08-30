@@ -253,6 +253,28 @@ fm_backend_orca_composer_state() {  # <terminal-id> [expected-label] -> empty|pe
   printf '%s' "$verdict"
 }
 
+# fm_backend_orca_rendered_busy_state: busy|idle|unknown from the terminal's
+# RENDERED busy footer, the same delivery-only signal bin/fm-tmux-lib.sh's
+# fm_pane_busy_state and bin/backends/herdr.sh's
+# fm_backend_herdr_rendered_busy_state read, scanning the same bounded tail
+# folded to its last 12 non-blank rows. This is NOT a worker-state source -
+# bin/fm-busy-lib.sh's semantic per-task contract stays the owner of that
+# question; this read exists only so a delivery guard (composer-command
+# delivery, a future submit core) can confirm it is safe to type into this
+# terminal right now, reusing the shared footer matcher rather than inventing
+# a second judgement of what "busy" looks like.
+fm_backend_orca_rendered_busy_state() {  # <terminal-id> [harness] -> busy|idle|unknown
+  local terminal=$1 harness=${2:-} cap visible
+  cap=$(fm_backend_orca_capture "$terminal" 40) || { printf 'unknown'; return 0; }
+  visible=$(printf '%s' "$cap" | grep -v '^[[:space:]]*$' | tail -12)
+  [ -n "$visible" ] || { printf 'unknown'; return 0; }
+  if printf '%s' "$visible" | fm_busy_lines_match "$harness"; then
+    printf 'busy'
+  else
+    printf 'idle'
+  fi
+}
+
 fm_backend_orca_send_key() {  # <terminal-id> <key>
   local terminal=$1 key=$2
   fm_backend_orca_tool_check || return 1

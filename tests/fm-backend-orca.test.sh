@@ -229,6 +229,42 @@ test_composer_state_bare_shell_prompt_is_unknown() {
   pass "fm_backend_orca_composer_state: a bare dead-shell prompt reads unknown (unsafe-for-injection), never empty"
 }
 
+test_rendered_busy_state_matches_delivery_busy_footer() {
+  # Delivery-only rendered busy read (bin/fm-composer-command-lib.sh's
+  # dispatch target for backend=orca), mirroring tmux's fm_pane_is_busy and
+  # herdr's fm_backend_herdr_rendered_busy_state - never
+  # bin/fm-busy-lib.sh's semantic per-task contract.
+  local out
+  orca_case rendered-busy-claude
+  printf '{"ok":true,"result":{"terminal":{"tail":["some earlier output","Thinking… (12s · esc to interrupt)"]}}}\n' > "$RESP/1.out"
+  out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
+    bash -c '. "$0/bin/backends/orca.sh"; fm_backend_orca_rendered_busy_state term-123 claude' "$ROOT" )
+  [ "$out" = busy ] || fail "a claude busy footer should read busy, got '$out'"
+  pass "fm_backend_orca_rendered_busy_state: matches a harness-scoped delivery busy footer"
+}
+
+test_rendered_busy_state_idle_when_no_busy_footer() {
+  local out
+  orca_case rendered-busy-idle
+  printf '{"ok":true,"result":{"terminal":{"tail":["  ╭────────────────────────╮","  │ ❯                      │","  ╰──────── Composer ──────╯"]}}}\n' > "$RESP/1.out"
+  out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
+    bash -c '. "$0/bin/backends/orca.sh"; fm_backend_orca_rendered_busy_state term-123 claude' "$ROOT" )
+  [ "$out" = idle ] || fail "an idle empty composer should read idle, got '$out'"
+  pass "fm_backend_orca_rendered_busy_state: reads idle when no busy footer is present"
+}
+
+test_rendered_busy_state_unknown_on_unreadable_capture() {
+  local out status
+  orca_case rendered-busy-unreadable
+  printf '{"ok":false,"error":{"code":"terminal_handle_stale","message":"terminal handle stale"}}\n' > "$RESP/1.out"
+  out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
+    bash -c '. "$0/bin/backends/orca.sh"; fm_backend_orca_rendered_busy_state term-123' "$ROOT" )
+  status=$?
+  [ "$status" -eq 0 ] || fail "rendered_busy_state should never fail closed with a non-zero exit"
+  [ "$out" = unknown ] || fail "an unreadable capture should read unknown, got '$out'"
+  pass "fm_backend_orca_rendered_busy_state: reads unknown (never busy) when the capture fails"
+}
+
 test_send_text_submit_popup_autocomplete_requires_second_enter() {
   local out log_text enter_count
   orca_case send-submit-popup-autocomplete
@@ -1371,6 +1407,9 @@ test_composer_state_stale_banner_never_wins
 test_send_text_submit_retries_when_composer_stays_pending
 test_composer_state_popup_placeholder_fill_is_pending
 test_composer_state_bare_shell_prompt_is_unknown
+test_rendered_busy_state_matches_delivery_busy_footer
+test_rendered_busy_state_idle_when_no_busy_footer
+test_rendered_busy_state_unknown_on_unreadable_capture
 test_send_text_submit_popup_autocomplete_requires_second_enter
 test_send_literal_constructs_non_enter_send
 test_send_text_submit_reports_send_failed

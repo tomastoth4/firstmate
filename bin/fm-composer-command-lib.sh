@@ -2,17 +2,19 @@
 # fm-composer-command-lib.sh - the ONE owner of composer command-invocation
 # delivery: recognizing a captain note as an allowlisted slash command,
 # resolving THIS home's own primary session with certainty, and typing the
-# exact command into it through the existing tmux delivery primitives
-# (bin/fm-tmux-lib.sh) rather than only queueing it as ordinary note text.
+# exact command into it through the existing tmux (bin/fm-tmux-lib.sh) or Orca
+# (bin/backends/orca.sh) delivery primitives rather than only queueing it as
+# ordinary note text.
 #
 # Why keystrokes at all: a slash command such as `/compact` is intercepted
 # locally by the CLI's own input loop, not sent to the model as text. The
 # existing captain-note path (bin/fm-inbox.sh) delivers a note's BODY into
 # firstmate's own context as conversation text, which never reaches that local
 # interceptor - so a note that reads "/compact" is filed and read, never
-# executed. The only way to make it execute is to type it into the same pty a
-# human would, exactly the way bin/fm-tmux-lib.sh's submit primitives already
-# do for the away-mode daemon and bin/fm-send.sh.
+# executed. The only way to make it execute is to type it into the same pty (or
+# Orca terminal) a human would, exactly the way bin/fm-tmux-lib.sh's and
+# bin/backends/orca.sh's submit primitives already do for the away-mode daemon
+# and bin/fm-send.sh.
 #
 # Default-off: the whole feature is gated on the presence of the local,
 # gitignored config/composer-commands file (fm_composer_command_enabled). An
@@ -31,9 +33,16 @@
 # one entry and why nothing else is on it.
 #
 # Session resolution: firstmate's own pane can only be identified with
-# certainty from WITHIN firstmate's own live turn, where $TMUX_PANE is
-# genuinely inherited (bin/fm-supervisor-target-lib.sh's discover_supervisor_*,
-# the same primitives the away-mode daemon uses to find the captain's pane).
+# certainty from WITHIN firstmate's own live turn, where $TMUX_PANE (or, under
+# Orca, $ORCA_TERMINAL_HANDLE) is genuinely inherited
+# (bin/fm-supervisor-target-lib.sh's discover_supervisor_*, the same
+# primitives the away-mode daemon uses to find the captain's pane).
+# $ORCA_TERMINAL_HANDLE is Orca's own equivalent of $TMUX_PANE: verified
+# empirically to name exactly the hosting terminal (`orca terminal show
+# --terminal "$ORCA_TERMINAL_HANDLE"` resolves to that same live terminal,
+# worktree, and branch, never a sibling one), so the same certainty-or-nothing
+# contract holds - this never scans Orca's terminal list by name, title, or
+# cwd, and never guesses "the only one".
 # A note's delivery, though, is triggered by bin/fm-inbox.sh running as a
 # SEPARATE process with no such inheritance - the UI's backend invokes it, not
 # firstmate's own shell. So resolution happens in two steps, split the same way
@@ -52,15 +61,20 @@
 #                                        never scans for panes by name and
 #                                        never guesses.
 #
-# Busy handling (fm_composer_command_deliver): reuses fm-tmux-lib.sh's
-# DELIVERY busy read (fm_pane_is_busy, fm_tmux_composer_state) verbatim - the
-# same primitives bin/fm-supervise-daemon.sh's inject_msg already uses to
-# decide whether it is safe to type into a live pane. This is deliberately NOT
-# the semantic per-task busy-state contract in bin/fm-busy-lib.sh: firstmate's
-# own primary session has no armed busy-state record the way a spawned
-# crewmate task does, and the delivery guard's job is narrower anyway (is
-# ANYONE mid-turn or mid-type right now), which is exactly what the rendered
-# tail and composer classifier already answer.
+# Busy handling (fm_composer_command_deliver): reuses each recorded backend's
+# own DELIVERY busy read verbatim, never a second private judgement -
+# fm-tmux-lib.sh's fm_pane_is_busy/fm_tmux_composer_state for tmux (the same
+# primitives bin/fm-supervise-daemon.sh's inject_msg already uses to decide
+# whether it is safe to type into a live pane), and bin/backends/orca.sh's
+# fm_backend_orca_rendered_busy_state/fm_backend_orca_composer_state for Orca -
+# the latter built on the SAME shared screen classifier
+# (fm_composer_classify_screen, bin/fm-composer-lib.sh) tmux's own verdict
+# comes from, so the two backends can never disagree about what "empty" means.
+# This is deliberately NOT the semantic per-task busy-state contract in
+# bin/fm-busy-lib.sh: firstmate's own primary session has no armed busy-state
+# record the way a spawned crewmate task does, and the delivery guard's job is
+# narrower anyway (is ANYONE mid-turn or mid-type right now), which is exactly
+# what the rendered tail and composer classifier already answer.
 #
 # Decision: refuse-and-report when busy, never silently retry. Firstmate
 # cannot safely poll for the pane going idle without either creating a second
@@ -78,8 +92,10 @@
 # durable id). A confirmed submit writes a durable, empty marker file under
 # state/.composer-command-delivered/<key> BEFORE returning success; every call
 # checks that marker FIRST and treats its presence as already-done, no-op
-# success. The marker is written only after fm_tmux_submit_core reports the
-# proof-carrying "empty" verdict (the composer actually cleared), never
+# success. The marker is written only after the recorded backend's submit
+# primitive (fm_tmux_submit_core for tmux, fm_backend_orca_send_text_submit for
+# Orca) reports the proof-carrying "empty" verdict (the composer actually
+# cleared), never
 # before, so a crash before that point leaves nothing marked and a safe retry
 # is still possible. The write is then VERIFIED (the file's existence is
 # checked, not either command's exit code) rather than assumed: a live
@@ -97,15 +113,24 @@
 # CONCURRENT attempt at the same key rather than racing it.
 #
 # Sourcing: set -u safe. Depends on bin/fm-supervisor-target-lib.sh (session
-# discovery) and bin/fm-tmux-lib.sh (busy/composer read and submit) being
-# sourced by the caller, or sources them itself when FM_COMPOSER_COMMAND_LIB_DIR
-# points at this file's directory.
+# discovery), bin/fm-tmux-lib.sh (tmux busy/composer read and submit), and
+# bin/backends/orca.sh (Orca busy/composer read and submit) being sourced by
+# the caller, or sources them itself when FM_COMPOSER_COMMAND_LIB_DIR points at
+# this file's directory. bin/backends/orca.sh is sourced once per shell behind
+# the same _FM_BACKEND_ORCA_SOURCED guard bin/fm-backend.sh's fm_backend_source
+# uses, so this file composes safely whether or not a caller already sourced
+# it through that dispatcher.
 
 FM_COMPOSER_COMMAND_LIB_DIR="$(cd "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=bin/fm-supervisor-target-lib.sh
 . "$FM_COMPOSER_COMMAND_LIB_DIR/fm-supervisor-target-lib.sh"
 # shellcheck source=bin/fm-tmux-lib.sh
 . "$FM_COMPOSER_COMMAND_LIB_DIR/fm-tmux-lib.sh"
+if [ -z "${_FM_BACKEND_ORCA_SOURCED:-}" ]; then
+  # shellcheck source=bin/backends/orca.sh
+  . "$FM_COMPOSER_COMMAND_LIB_DIR/backends/orca.sh"
+  _FM_BACKEND_ORCA_SOURCED=1
+fi
 
 # The allowlist. One entry today: /compact is a local, reversible
 # conversation-management command with no filesystem, network, merge, or
@@ -118,11 +143,12 @@ FM_COMPOSER_COMMAND_ALLOWLIST=(
   "/compact"
 )
 
-# Only tmux is verified for this feature (the CLI records a typed command as
-# plain pty input on tmux, matching the evidence this feature was built on).
-# A recorded herdr or other backend target is refused explicitly rather than
-# assumed to behave the same way.
-FM_COMPOSER_COMMAND_SUPPORTED_BACKENDS="tmux"
+# tmux and orca are verified for this feature (the CLI records a typed
+# command as plain pty input on tmux, matching the evidence this feature was
+# built on; Orca's `terminal send` does the same over its own terminal
+# primitive - see bin/backends/orca.sh). A recorded herdr or other backend
+# target is refused explicitly rather than assumed to behave the same way.
+FM_COMPOSER_COMMAND_SUPPORTED_BACKENDS="tmux orca"
 
 # fm_composer_command_trim: echo <text> with leading/trailing ASCII whitespace
 # (space, tab, newline, carriage return) removed. Internal whitespace and
@@ -277,6 +303,64 @@ fm_epoch_now() {
   date +%s 2>/dev/null
 }
 
+# --- per-backend dispatch ----------------------------------------------------
+#
+# Thin, scoped to exactly the backends FM_COMPOSER_COMMAND_SUPPORTED_BACKENDS
+# names, mirroring bin/fm-backend.sh's generic per-op dispatchers without
+# pulling in that file's whole task-backend surface (worktree/meta handling
+# this feature never needs). Each function reuses the named backend's own
+# existing primitive verbatim - never a second, private judgement of
+# existence, busyness, or composer state.
+
+# fm_composer_command_endpoint_exists: cheap, read-only existence check,
+# mirroring bin/fm-backend.sh's fm_backend_target_exists tmux/orca arms.
+fm_composer_command_endpoint_exists() {  # <backend> <target>
+  case "$1" in
+    tmux) tmux display-message -p -t "$2" '#{pane_id}' >/dev/null 2>&1 ;;
+    orca) fm_backend_orca_capture "$2" 1 >/dev/null 2>&1 ;;
+    *) return 1 ;;
+  esac
+}
+
+# fm_composer_command_rendered_busy: the delivery-only rendered busy footer
+# read (see this file's header) - tmux: fm_pane_is_busy; orca:
+# fm_backend_orca_rendered_busy_state. Never bin/fm-busy-lib.sh's semantic
+# per-task contract.
+fm_composer_command_rendered_busy() {  # <backend> <target> <harness>
+  case "$1" in
+    tmux) fm_pane_is_busy "$2" "$3" ;;
+    orca) [ "$(fm_backend_orca_rendered_busy_state "$2" "$3")" = busy ] ;;
+    *) return 1 ;;
+  esac
+}
+
+# fm_composer_command_composer_state_read: empty|pending|pending-unproven|unknown
+# from the recorded backend's own composer classifier (tmux:
+# fm_tmux_composer_state; orca: fm_backend_orca_composer_state), both thin
+# adapters over the one shared shape owner (fm_composer_classify_screen,
+# bin/fm-composer-lib.sh).
+fm_composer_command_composer_state_read() {  # <backend> <target>
+  case "$1" in
+    tmux) fm_tmux_composer_state "$2" ;;
+    orca) fm_backend_orca_composer_state "$2" ;;
+    *) printf 'unknown' ;;
+  esac
+}
+
+# fm_composer_command_submit: type <text> once and submit, verifying the
+# composer cleared (tmux: fm_tmux_submit_core; orca:
+# fm_backend_orca_send_text_submit). Echoes the backend's proof-carrying
+# verdict; the caller requires exact `empty` for confirmed delivery.
+fm_composer_command_submit() {  # <backend> <target> <text> <retries> <enter-sleep> <settle>
+  local backend=$1
+  shift
+  case "$backend" in
+    tmux) fm_tmux_submit_core "$@" ;;
+    orca) fm_backend_orca_send_text_submit "$@" ;;
+    *) printf 'unknown' ;;
+  esac
+}
+
 # fm_composer_command_deliver: the full, idempotent delivery pipeline. Prints
 # exactly one line describing the outcome and returns a distinct code for
 # every outcome, so a caller (or a test) never has to guess what happened:
@@ -333,14 +417,15 @@ fm_composer_command_deliver() {  # <text> <key> <config-dir> <state-dir>
       ;;
   esac
 
-  if ! tmux display-message -p -t "$target" '#{pane_id}' >/dev/null 2>&1; then
+  if ! fm_composer_command_endpoint_exists "$backend" "$target"; then
     fm_composer_command_release "$state_dir" "$key"
     printf 'this home'"'"'s own session endpoint no longer exists: delivering nothing\n'
     return 7
   fi
 
   harness=$("$FM_COMPOSER_COMMAND_LIB_DIR/fm-harness.sh" 2>/dev/null || printf 'unknown')
-  if fm_pane_is_busy "$target" "$harness" || [ "$(fm_tmux_composer_state "$target")" != empty ]; then
+  if fm_composer_command_rendered_busy "$backend" "$target" "$harness" \
+    || [ "$(fm_composer_command_composer_state_read "$backend" "$target")" != empty ]; then
     fm_composer_command_release "$state_dir" "$key"
     printf 'deferred: this home'"'"'s own session is busy or its composer is not confirmed empty (command not delivered, not marked done)\n'
     return 8
@@ -349,7 +434,7 @@ fm_composer_command_deliver() {  # <text> <key> <config-dir> <state-dir>
   retries=${FM_COMPOSER_COMMAND_SUBMIT_RETRIES:-5}
   sleep_s=${FM_COMPOSER_COMMAND_SUBMIT_SLEEP:-0.2}
   settle=${FM_COMPOSER_COMMAND_SUBMIT_SETTLE:-0.2}
-  verdict=$(fm_tmux_submit_core "$target" "$cmd" "$retries" "$sleep_s" "$settle")
+  verdict=$(fm_composer_command_submit "$backend" "$target" "$cmd" "$retries" "$sleep_s" "$settle")
   fm_composer_command_release "$state_dir" "$key"
 
   if [ "$verdict" != empty ]; then

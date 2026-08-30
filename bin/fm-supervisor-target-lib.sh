@@ -22,9 +22,9 @@ FM_SUPERVISOR_TARGET_DEFAULT="firstmate:0"
 FM_SUPERVISOR_BACKEND_DEFAULT="tmux"
 
 # discover_supervisor_target: resolve the pane running firstmate. Priority:
-#   1. FM_SUPERVISOR_TARGET env (explicit override) - may be a tmux target or a
-#      herdr "<session>:<pane-id>" target (paired with discover_supervisor_backend
-#      to know which).
+#   1. FM_SUPERVISOR_TARGET env (explicit override) - may be a tmux target, a
+#      herdr "<session>:<pane-id>" target, or an Orca terminal handle (paired
+#      with discover_supervisor_backend to know which).
 #   2. $TMUX_PANE - tmux sets this in every pane's environment; inherited by a
 #      process launched from firstmate's own pane.
 #   3. $HERDR_ENV=1 + $HERDR_PANE_ID - herdr injects both into every process it
@@ -33,7 +33,14 @@ FM_SUPERVISOR_BACKEND_DEFAULT="tmux"
 #      fm_backend_herdr_session) and $HERDR_PANE_ID. Checked after $TMUX_PANE so a
 #      tmux pane nested inside herdr still resolves to tmux, matching
 #      fm_backend_detect's innermost-first rule.
-#   4. FM_SUPERVISOR_TARGET_DEFAULT - legacy tmux fallback (may not resolve if the
+#   4. $ORCA_TERMINAL_HANDLE - Orca injects this into every process running
+#      inside one of its own managed terminals (verified empirically: it names
+#      exactly the hosting terminal - `orca terminal show --terminal
+#      "$ORCA_TERMINAL_HANDLE"` resolves to that same live terminal, worktree,
+#      and branch, never a sibling one, so it can never be confused with
+#      another Orca-hosted session the way scanning by name/title/cwd could
+#      be). Checked after tmux/herdr for the same innermost-first reason.
+#   5. FM_SUPERVISOR_TARGET_DEFAULT - legacy tmux fallback (may not resolve if the
 #      session is named differently). Returns 1 so the caller can warn.
 discover_supervisor_target() {
   if [ -n "${FM_SUPERVISOR_TARGET:-}" ]; then
@@ -48,18 +55,23 @@ discover_supervisor_target() {
     printf '%s:%s' "${HERDR_SESSION:-default}" "$HERDR_PANE_ID"
     return 0
   fi
+  if [ -n "${ORCA_TERMINAL_HANDLE:-}" ]; then
+    printf '%s' "$ORCA_TERMINAL_HANDLE"
+    return 0
+  fi
   printf '%s' "$FM_SUPERVISOR_TARGET_DEFAULT"
   return 1
 }
 
 # discover_supervisor_backend: resolve the supervisor pane's BACKEND, independent
 # of the target string so an explicit FM_SUPERVISOR_TARGET override still knows
-# which primitives (tmux vs herdr) to dispatch through. Priority mirrors
+# which primitives (tmux vs herdr vs orca) to dispatch through. Priority mirrors
 # discover_supervisor_target and bin/fm-backend.sh's fm_backend_detect:
 #   1. FM_SUPERVISOR_BACKEND env (explicit override).
 #   2. $TMUX_PANE set - tmux.
 #   3. $HERDR_ENV=1 (with $HERDR_PANE_ID present) - herdr.
-#   4. FM_SUPERVISOR_BACKEND_DEFAULT (tmux) - matches the target fallback. Returns 1.
+#   4. $ORCA_TERMINAL_HANDLE set - orca.
+#   5. FM_SUPERVISOR_BACKEND_DEFAULT (tmux) - matches the target fallback. Returns 1.
 discover_supervisor_backend() {
   if [ -n "${FM_SUPERVISOR_BACKEND:-}" ]; then
     printf '%s' "$FM_SUPERVISOR_BACKEND"
@@ -71,6 +83,10 @@ discover_supervisor_backend() {
   fi
   if [ "${HERDR_ENV:-}" = "1" ] && [ -n "${HERDR_PANE_ID:-}" ]; then
     printf 'herdr'
+    return 0
+  fi
+  if [ -n "${ORCA_TERMINAL_HANDLE:-}" ]; then
+    printf 'orca'
     return 0
   fi
   printf '%s' "$FM_SUPERVISOR_BACKEND_DEFAULT"
