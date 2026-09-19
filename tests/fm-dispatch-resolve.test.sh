@@ -635,4 +635,62 @@ expect_code 0 "$code" "--help exits 0"
 assert_contains "$out" 'Usage:' "--help prints usage"
 pass "configuration errors exit 2 before any network call"
 
+# --- opencode-go: derived cycle makes it rank instead of escalating ----------
+# One rule resolving to a pi/opencode-go profile. quota-axi leaves opencode-go's
+# spendPriority unresolved (no window cycle); the tool derives it from the
+# resetsAt cadence so the provider ranks and the intake gets a profile line.
+OC_RULES="$TMP_ROOT/opencode-rules.json"
+cat > "$OC_RULES" <<'JSON'
+{ "rules": [ { "when": "Deep research or repo investigation with a written report deliverable.",
+    "use": { "harness": "pi", "model": "glm-5.3-flash", "effort": "high", "provider": "opencode-go" } } ] }
+JSON
+cp "$OC_RULES" "$RULES"
+OC_RESPONSE="$TMP_ROOT/opencode-response.json"
+cat > "$OC_RESPONSE" <<'JSON'
+{ "model": "jev-1.13.0",
+  "answers": { "rule": { "type": "choice", "choice": "rule_1", "confidence": 0.95,
+    "probabilities": { "rule_1": 0.97, "default": 0.03 } } },
+  "usage": { "input_tokens": 700, "output_tokens": 40 } }
+JSON
+
+OC_QUOTA="$TMP_ROOT/opencode-quota.json"
+cat > "$OC_QUOTA" <<'JSON'
+{ "generatedAt": "2026-09-19T14:51:49.254Z", "schemaVersion": 5, "providers": [
+  { "provider": "opencode-go", "plan": "OpenCode Go", "state": { "status": "fresh", "stale": false },
+    "windows": [
+      { "id": "rolling", "kind": "unknown", "percentRemaining": 83, "resetsAt": "2026-09-19T15:03:01.621Z", "pace": { "status": "unknown", "reason": "missing_cycle" } },
+      { "id": "weekly", "kind": "weekly", "percentRemaining": 69, "resetsAt": "2026-09-21T00:00:00.621Z", "pace": { "status": "unknown", "reason": "missing_cycle" } },
+      { "id": "monthly", "kind": "monthly", "percentRemaining": 85, "resetsAt": "2026-10-17T07:29:34.621Z", "pace": { "status": "unknown", "reason": "missing_cycle" } } ],
+    "quotaSemantics": { "status": "known", "effectiveAvailability": [
+      { "scope": "all_models", "status": "known", "effectivePercentRemaining": 69,
+        "boundedBy": ["rolling", "weekly", "monthly"], "runway": { "status": "unknown" },
+        "selection": { "status": "unknown", "unmeasurableWindowIds": ["rolling", "weekly", "monthly"] } } ] } } ] }
+JSON
+
+reset_log
+cp "$OC_RESPONSE" "$RESPONSE"
+QUOTA_AXI_FIXTURE="$OC_QUOTA" TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --project research
+expect_code 0 "$code" "opencode-go intake exits 0"
+assert_contains "$out" 'status: clear' "opencode-go ranks and the intake clears"
+assert_contains "$out" '--harness '\''pi'\'' --model '\''glm-5.3-flash'\'' --effort '\''high'\''' "the cleared profile is the pi/opencode-go one"
+assert_contains "$out" 'spendPriority=-0.1212' "the derived opencode-go spendPriority is on the quota-axi scale"
+pass "a derived cycle turns opencode-go from unranked into a cleared profile"
+
+# Contrast: with genuinely unmeasured windows (the pre-cycle 0.1.42 shape, empty
+# availability) the tool still escalates rather than fabricating a rank.
+OC_QUOTA_BARE="$TMP_ROOT/opencode-quota-bare.json"
+cat > "$OC_QUOTA_BARE" <<'JSON'
+{ "generatedAt": "2026-09-19T14:51:49.254Z", "schemaVersion": 5, "providers": [
+  { "provider": "opencode-go", "plan": "OpenCode Go", "state": { "status": "unknown", "stale": false },
+    "windows": [],
+    "quotaSemantics": { "status": "unknown", "effectiveAvailability": [] } } ] }
+JSON
+reset_log
+cp "$OC_RESPONSE" "$RESPONSE"
+QUOTA_AXI_FIXTURE="$OC_QUOTA_BARE" TYPESAFE_API_KEY=$KEY run code out err "$BRIEF" --project research
+assert_contains "$out" 'status: escalate' "unmeasured opencode-go still escalates"
+assert_not_contains "$out" 'spendPriority=-' "no spendPriority is fabricated when there is nothing to derive from"
+pass "enrichment never fabricates a rank for genuinely unmeasured opencode-go windows"
+cp "$BASE_RULES" "$RULES"
+
 printf '# all fm-dispatch-resolve tests passed\n'
