@@ -62,6 +62,8 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 
 # shellcheck source=bin/fm-quota-axi-lib.sh
 . "$SCRIPT_DIR/fm-quota-axi-lib.sh"
+# shellcheck source=bin/fm-quota-opencode-lib.sh
+. "$SCRIPT_DIR/fm-quota-opencode-lib.sh"
 # shellcheck source=bin/fm-control-lib.sh
 . "$SCRIPT_DIR/fm-control-lib.sh"
 # shellcheck source=bin/fm-env-lib.sh
@@ -218,7 +220,7 @@ fi
 
 RESP_FILE=$(mktemp) || die "mktemp failed"
 QUOTA=$(mktemp) || { rm -f "$RESP_FILE"; die "mktemp failed"; }
-trap 'rm -f "$RULES" "$RESP_FILE" "$QUOTA"' EXIT
+trap 'rm -f "$RULES" "$RESP_FILE" "$QUOTA" "$QUOTA.enriched"' EXIT
 LAT_MS=null
 command -v curl >/dev/null 2>&1 || emit_error "curl not installed"
   REQUEST=$(jq -n --rawfile brief "$BRIEF" --arg project "$PROJECT" --arg model "$TS_MODEL" \
@@ -260,8 +262,13 @@ jq -e --slurpfile rules "$RULES" '
   "$RESP_FILE" >/dev/null 2>&1 || emit_error "response is not a rule Choice answer"
 
 # ---- quota evidence: one quota-axi --json snapshot -----------------------------
+# opencode-go publishes headroom but no window cycle, so quota-axi leaves its
+# spendPriority unresolved. fm_quota_opencode_enrich derives the cycle from the
+# observed resetsAt cadence and fills a comparable spendPriority so the provider
+# ranks; it passes the snapshot through unchanged on any failure.
 command -v quota-axi >/dev/null 2>&1 || emit_error "quota-axi not installed"
 quota-axi --json > "$QUOTA" 2>/dev/null || emit_error "quota-axi --json failed"
+fm_quota_opencode_enrich < "$QUOTA" > "$QUOTA.enriched" 2>/dev/null && mv "$QUOTA.enriched" "$QUOTA"
 fm_quota_json_valid < "$QUOTA" || emit_error "quota-axi --json returned an invalid snapshot"
 
 # ---- resolution: declared gates + quota evidence + argmax, all in jq ------------
