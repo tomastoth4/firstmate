@@ -74,7 +74,22 @@ test_fm_home_parameterization() {
   grep -F ">> '$home_one/state/task-c.status'" "$brief" >/dev/null || fail "secondmate brief did not shell-quote FM_HOME state path"
 
   printf 'project=x\n' > "$home_one/state/task-a.meta"
-  FM_HOME="$home_one" FM_GUARD_GRACE=999999 "$ROOT/bin/fm-pr-check.sh" task-a https://github.com/example/repo/pull/1 >/dev/null 2>/dev/null \
+  # The registration now runs the body guard first, so give it a hermetic gh-axi
+  # serving an empty pull request instead of reaching the real forge.
+  fakebin="$home_one/fakebin"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+set -eu
+case "$*" in
+  'api repos/example/repo/pulls/1 --jq .body') printf '%s\n' 'Body.' ;;
+  'api repos/example/repo/issues/1/comments'*) exit 0 ;;
+  'api repos/example/repo/contents/'*) exit 1 ;;
+  *) echo 'error: pull request not found' >&2; exit 1 ;;
+esac
+SH
+  chmod +x "$fakebin/gh-axi"
+  FM_HOME="$home_one" FM_GUARD_GRACE=999999 PATH="$fakebin:$PATH" "$ROOT/bin/fm-pr-check.sh" task-a https://github.com/example/repo/pull/1 >/dev/null 2>/dev/null \
     || fail "fm-pr-check failed under FM_HOME"
   [ -f "$home_one/state/task-a.check.sh" ] || fail "pr check was not written under FM_HOME/state"
   [ ! -e "$home_two/state/task-a.check.sh" ] || fail "pr check leaked into another home"

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Record a PR-ready task: store one validated canonical pr=<url> and the forge's
 # exact pr_head=<sha> when available, then atomically arm a static merge poll.
+# A GitHub pull request first passes bin/fm-pr-body-guard.sh; a guard refusal
+# records no pr= and arms no poll.
 # The watcher check source is byte-for-byte bin/fm-pr-poll.sh; task and PR data
 # live only in a private sidecar and are never interpolated into shell source.
 # A GitHub pull request URL and a GitLab merge request URL are both accepted,
@@ -58,6 +60,17 @@ fm_pr_poll_retirement_recover_one "$STATE" "$ID" "$SCRIPT_DIR/fm-pr-poll.sh" || 
 if [ "$PROVIDER" = gitlab ] && ! command -v glab >/dev/null 2>&1; then
   echo "error: watching a GitLab merge request requires glab on PATH" >&2
   exit 1
+fi
+
+# The content guard is the deterministic publication gate: a GitHub PR whose
+# description or comments leak forbidden vocabulary, ignore the repository's
+# own PR template, or carry pipeline tooling content is never recorded or
+# watched. bin/fm-pr-body-guard.sh owns the rules and prints the diagnostics.
+if [ "$PROVIDER" = github ]; then
+  if ! "$SCRIPT_DIR/fm-pr-body-guard.sh" "$FM_PR_OWNER" "$FM_PR_REPO" "$NUMBER"; then
+    echo "error: PR content guard refused $URL; pr= was not recorded and no poll was armed" >&2
+    exit 1
+  fi
 fi
 
 "$FM_ROOT/bin/fm-guard.sh" || true
