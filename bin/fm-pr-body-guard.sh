@@ -21,6 +21,10 @@
 # pipeline-owned PR passes this guard only after its worker strips every
 # no-mistakes content block from the description and deletes any no-mistakes
 # PR comments as the final step before reporting the PR ready.
+# Rules fetch through plain `gh api` with --jq, which prints the raw field
+# value; gh-axi wraps API output in its own TOON response envelope, which once
+# made the base64 template decode fail on every candidate path and fed the
+# rules the wrapped envelope instead of the raw description text.
 # Exit 0 only when every applicable rule passes, printing one OK line; any
 # rule failure prints its diagnostic on stderr and exits 1.
 # Usage: fm-pr-body-guard.sh <owner> <repo> <pr-number>
@@ -39,8 +43,8 @@ case "$NUMBER" in
     exit 2
     ;;
 esac
-command -v gh-axi >/dev/null 2>&1 \
-  || { echo "error: fm-pr-body-guard requires gh-axi on PATH" >&2; exit 1; }
+command -v gh >/dev/null 2>&1 \
+  || { echo "error: fm-pr-body-guard requires gh on PATH" >&2; exit 1; }
 
 # Matching prefers rg and falls back to grep -in, which every runner has; both
 # print the same N:text shape the diagnostics relay verbatim.
@@ -64,14 +68,14 @@ TEMPLATE_FILE="$TMP_DIR/template"
 # PR template. The template is looked up through the contents API over the
 # conventional repository paths, falling back to a local clone when one is
 # exported; the first readable hit wins.
-if ! gh-axi api "repos/$OWNER/$REPO/pulls/$NUMBER" --jq .body > "$BODY_FILE" 2>/dev/null; then
+if ! gh api "repos/$OWNER/$REPO/pulls/$NUMBER" --jq .body > "$BODY_FILE" 2>/dev/null; then
   echo "error: could not fetch the pull request body for $OWNER/$REPO#$NUMBER" >&2
   exit 1
 fi
 if [ "$(cat "$BODY_FILE")" = "null" ]; then
   : > "$BODY_FILE"
 fi
-if ! gh-axi api "repos/$OWNER/$REPO/issues/$NUMBER/comments" --paginate --jq '.[].body' \
+if ! gh api "repos/$OWNER/$REPO/issues/$NUMBER/comments" --paginate --jq '.[].body' \
   > "$COMMENTS_FILE" 2>/dev/null; then
   echo "error: could not fetch the pull request comments for $OWNER/$REPO#$NUMBER" >&2
   exit 1
@@ -115,16 +119,22 @@ docs/PULL_REQUEST_TEMPLATE.md
 PULL_REQUEST_TEMPLATE.md
 pull_request_template.md
 "
-fetch_template() { # print the matched template path, or return 1 when none
+fetch_template() { # 0 = matched path printed, 1 = none, 2 = a found template could not be decoded
   local candidate content
   for candidate in $TEMPLATE_CANDIDATES; do
-    if content=$(gh-axi api "repos/$OWNER/$REPO/contents/$candidate" --jq .content 2>/dev/null) \
+    if content=$(gh api "repos/$OWNER/$REPO/contents/$candidate" --jq .content 2>/dev/null) \
       && [ -n "$content" ] && [ "$content" != "null" ]; then
       if printf '%s\n' "$content" | base64 -d 2>/dev/null > "$TEMPLATE_FILE" \
         || printf '%s\n' "$content" | base64 -D 2>/dev/null > "$TEMPLATE_FILE"; then
         printf '%s\n' "$candidate"
         return 0
       fi
+      # A found template that cannot be decoded means the fetched text is not
+      # the raw contents value (the gh-axi envelope once caused exactly this);
+      # treating it as no template would silently skip rule B, so report the
+      # distinct status the caller turns into a hard error after the capture.
+      echo "error: found PR template $candidate in $OWNER/$REPO but could not decode its base64 contents; the fetch layer may not be returning raw API output" >&2
+      return 2
     fi
   done
   if [ -n "${FM_PR_BODY_GUARD_LOCAL_CLONE:-}" ] && [ -d "$FM_PR_BODY_GUARD_LOCAL_CLONE" ]; then
@@ -164,8 +174,12 @@ extract_headings() { # <file>
   done < "$1"
 }
 
-TEMPLATE_PATH=$(fetch_template) || TEMPLATE_PATH=
-if [ -n "$TEMPLATE_PATH" ]; then
+TEMPLATE_RC=0
+TEMPLATE_PATH=$(fetch_template) || TEMPLATE_RC=$?
+if [ "$TEMPLATE_RC" -eq 2 ]; then
+  exit 1
+fi
+if [ -n "${TEMPLATE_PATH:-}" ]; then
   REQUIRED=$(extract_headings "$TEMPLATE_FILE")
   ACTUAL=$(extract_headings "$BODY_FILE")
   MISSING=

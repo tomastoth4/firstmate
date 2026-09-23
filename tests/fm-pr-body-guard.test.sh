@@ -9,11 +9,16 @@ SCRIPT="$ROOT/bin/fm-pr-body-guard.sh"
 TMP_ROOT=$(fm_test_tmproot fm-pr-body-guard)
 FAKEBIN=$(fm_fakebin "$TMP_ROOT")
 
-# The fake gh-axi serves the fixture files each case exports: the PR body, the
+# The fake gh serves the fixture files each case exports: the PR body, the
 # comment bodies, and the repository's PR template (encoded to base64 exactly
-# as the contents API returns it, including line wrapping). A contents call for
-# any other candidate path exits 1 quietly, the way a 404 does.
-cat > "$FAKEBIN/gh-axi" <<'SH'
+# as the contents API returns it, including line wrapping). It serves raw
+# values, the way plain `gh api --jq` does; a separate fixture drives the
+# found-but-undecodable template error. A contents call for any other
+# candidate path exits 1 quietly, the way a 404 does.
+# A fake gh-axi also sits on the PATH and always exits 91: the guard must
+# fetch through gh, so a regression back to the gh-axi TOON envelope (which
+# wraps API output and once broke the template base64 decode) fails loudly.
+cat > "$FAKEBIN/gh" <<'SH'
 #!/usr/bin/env bash
 case " $* " in
   *" repos/o/r/pulls/7 --jq .body "*)
@@ -23,16 +28,28 @@ case " $* " in
     if [ -n "${FM_PRG_COMMENTS:-}" ]; then cat "$FM_PRG_COMMENTS"; fi
     ;;
   *" repos/o/r/contents/.github/pull_request_template.md --jq .content "*)
-    if [ -n "${FM_PRG_TEMPLATE:-}" ]; then base64 "$FM_PRG_TEMPLATE"; else exit 1; fi
+    if [ -n "${FM_PRG_TEMPLATE:-}" ]; then
+      base64 "$FM_PRG_TEMPLATE"
+    elif [ -n "${FM_PRG_TEMPLATE_DECODE_FAIL:-}" ]; then
+      cat "$FM_PRG_TEMPLATE_DECODE_FAIL"
+    else
+      exit 1
+    fi
     ;;
   *" repos/o/r/contents/"*)
     exit 1
     ;;
   *)
-    printf 'unexpected gh-axi call: %s\n' "$*" >&2
+    printf 'unexpected gh call: %s\n' "$*" >&2
     exit 91
     ;;
 esac
+SH
+chmod +x "$FAKEBIN/gh"
+cat > "$FAKEBIN/gh-axi" <<'SH'
+#!/usr/bin/env bash
+printf 'the guard must fetch through plain gh, not gh-axi: %s\n' "$*" >&2
+exit 91
 SH
 chmod +x "$FAKEBIN/gh-axi"
 
@@ -109,6 +126,47 @@ test_forbidden_vocabulary_without_template_refused() {
   out=$(FM_PRG_BODY=$body run_guard 2>&1) && rc=0 || rc=$?
   assert_refused 'RULE A' "forbidden vocabulary without a template" "$out" "$rc"
   pass "forbidden vocabulary is refused even when the repository has no template"
+}
+
+test_template_decode_failure_refused() {
+  # A template found through the contents API whose base64 does not decode
+  # cannot mean no template: it means the fetched text is not the raw
+  # contents value (the gh-axi TOON envelope once caused exactly this). The
+  # guard must stop hard instead of silently skipping template adherence.
+  local body out rc envelope
+  body=$(write_fixture body-decodefail.md 'plain description')
+  envelope=$(write_fixture envelope.txt 'api_response:' '  body: "c29tZXRoaW5nIHRoYXQgaXMgbm90IGJhc2U2NCAtLQ=="')
+  out=$(FM_PRG_BODY=$body FM_PRG_TEMPLATE_DECODE_FAIL="$envelope" run_guard 2>&1) && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || fail "an undecodable found template was treated as no template"
+  assert_contains "$out" 'could not decode' "the decode-failure refusal did not name the problem"
+  pass "a found template that cannot decode is a hard error, never a silent skip"
+}
+
+test_template_enforcement_note() {
+  # The enforced pass must say so; a guard that silently skips rule B prints
+  # the no-template note instead, which is how the wrapped-envelope regression
+  # hid: the guard ran, said "no template", and let invented sections through.
+  local body out rc
+  body=$(write_fixture body-note.md '## Summary' '' 'Does the thing.' '' '## Testing' '' 'Unit tests.')
+  out=$(FM_PRG_BODY=$body FM_PRG_TEMPLATE=$TEMPLATE_FILE run_guard 2>&1) && rc=0 || rc=$?
+  [ "$rc" -eq 0 ] || fail "a template-exact description was refused: $out"
+  assert_contains "$out" 'template adherence enforced' "the enforced-template pass did not name the template"
+  pass "an enforced template pass names the template, not the no-template note"
+}
+
+test_local_clone_template_used() {
+  # The contents API can be unreadable while a local clone is exported; the
+  # conventional local-clone fallback must still fetch and enforce the
+  # template.
+  local clone body out rc
+  clone=$(mktemp -d "$TMP_ROOT/clone.XXXXXX")
+  mkdir -p "$clone/.github"
+  cp "$TEMPLATE_FILE" "$clone/.github/pull_request_template.md"
+  body=$(write_fixture body-clonetmpl.md '## Summary' '' 'Does the thing.' '' '## Testing' '' 'Unit tests.')
+  out=$(FM_PRG_BODY=$body FM_PR_BODY_GUARD_LOCAL_CLONE=$clone run_guard 2>&1) && rc=0 || rc=$?
+  [ "$rc" -eq 0 ] || fail "a template reachable only through the local clone was not enforced: $out"
+  assert_contains "$out" 'template adherence enforced' "the local-clone pass did not name the template"
+  pass "a template in the exported local clone is found and enforced"
 }
 
 test_missing_required_heading_refused() {
@@ -205,8 +263,11 @@ test_usage_refusals() {
 
 test_grep_fallback_without_rg
 test_clean_template_match_passes
+test_template_enforcement_note
+test_local_clone_template_used
 test_forbidden_vocabulary_refused
 test_forbidden_vocabulary_without_template_refused
+test_template_decode_failure_refused
 test_missing_required_heading_refused
 test_invented_extra_section_refused
 test_reordered_sections_refused
