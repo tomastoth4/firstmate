@@ -73,23 +73,25 @@ test_fm_home_parameterization() {
   brief="$home_one/data/task-c/brief.md"
   grep -F ">> '$home_one/state/task-c.status'" "$brief" >/dev/null || fail "secondmate brief did not shell-quote FM_HOME state path"
 
-  printf 'project=x\n' > "$home_one/state/task-a.meta"
-  # The registration now runs the body guard first, so give it a hermetic gh-axi
-  # serving an empty pull request instead of reaching the real forge.
-  fakebin="$home_one/fakebin"
-  mkdir -p "$fakebin"
-  cat > "$fakebin/gh-axi" <<'SH'
+  # A pushed ship worktree, and a gh that supplies no forge head, so the PR
+  # check stays offline and its named-head gate reads the worktree's HEAD.
+  # The registration also runs the body guard first, so the same gh serves it
+  # an empty pull request instead of reaching the real forge.
+  fm_git_init_commit "$home_one/wt"
+  git -C "$home_one/wt" update-ref refs/remotes/origin/main "$(git -C "$home_one/wt" rev-parse HEAD)"
+  mkdir -p "$home_one/fakebin"
+  cat > "$home_one/fakebin/gh" <<'SH'
 #!/usr/bin/env bash
-set -eu
 case "$*" in
   'api repos/example/repo/pulls/1 --jq .body') printf '%s\n' 'Body.' ;;
   'api repos/example/repo/issues/1/comments'*) exit 0 ;;
-  'api repos/example/repo/contents/'*) exit 1 ;;
-  *) echo 'error: pull request not found' >&2; exit 1 ;;
+  *) exit 1 ;;
 esac
 SH
-  chmod +x "$fakebin/gh-axi"
-  FM_HOME="$home_one" FM_GUARD_GRACE=999999 PATH="$fakebin:$PATH" "$ROOT/bin/fm-pr-check.sh" task-a https://github.com/example/repo/pull/1 >/dev/null 2>/dev/null \
+  chmod +x "$home_one/fakebin/gh"
+  printf 'project=x\nworktree=%s\n' "$home_one/wt" > "$home_one/state/task-a.meta"
+  PATH="$home_one/fakebin:$PATH" FM_HOME="$home_one" FM_GUARD_GRACE=999999 \
+    "$ROOT/bin/fm-pr-check.sh" task-a https://github.com/example/repo/pull/1 >/dev/null 2>/dev/null \
     || fail "fm-pr-check failed under FM_HOME"
   [ -f "$home_one/state/task-a.check.sh" ] || fail "pr check was not written under FM_HOME/state"
   [ ! -e "$home_two/state/task-a.check.sh" ] || fail "pr check leaked into another home"
@@ -895,6 +897,32 @@ test_home_seed_refuses_local_only_project() {
     || fail "seed did not explain local-only project rejection"
   [ ! -e "$subhome" ] || fail "seed created a subhome before rejecting a local-only project"
   pass "home seeding refuses local-only projects"
+}
+
+# A registry entry whose forge token the parser cannot resolve yields no posture
+# at all. Reading that refusal as an empty mode would walk straight past the
+# local-only routing refusal above and clone the project into a secondmate home,
+# so the seed must stop instead.
+test_home_seed_refuses_an_unresolvable_registry_posture() {
+  local home subhome err
+  home="$TMP_ROOT/unresolvable-posture-home"
+  subhome="$TMP_ROOT/unresolvable-posture-subhome"
+  err="$TMP_ROOT/unresolvable-posture.err"
+  mkdir -p "$home/projects" "$home/data" "$home/state"
+  fm_git_init_commit "$home/projects/alpha"
+  fm_git_add_origin "$home/projects/alpha" "$TMP_ROOT/remotes/unresolvable-alpha.git"
+  printf '%s\n' '- alpha [local-only forge=githb] - alpha project (added 2026-06-22)' > "$home/data/projects.md"
+
+  if FM_HOME="$home" FM_SECONDMATE_CHARTER='design for alpha' FM_SECONDMATE_SCOPE='design for alpha' \
+    "$ROOT/bin/fm-home-seed.sh" design "$subhome" alpha >/dev/null 2>"$err"; then
+    fail "seed proceeded on a registry entry the parser refuses"
+  fi
+  grep -F 'project alpha does not resolve to a delivery posture' "$err" >/dev/null \
+    || fail "seed did not name the project whose posture could not be resolved"
+  grep -F 'unknown forge "githb"' "$err" >/dev/null \
+    || fail "the parser's own refusal never reached the operator"
+  [ ! -e "$subhome" ] || fail "seed created a subhome from a registry entry it could not resolve"
+  pass "home seeding refuses a registry entry whose posture does not resolve"
 }
 
 test_home_seed_refuses_registry_delimiter_home() {
@@ -2997,6 +3025,7 @@ test_home_seed_refuses_projectless_home_with_non_directory_projects
 test_home_seed_refuses_projectless_home_with_uninspectable_registry
 test_home_seed_refuses_missing_projects_without_signal
 test_home_seed_refuses_local_only_project
+test_home_seed_refuses_an_unresolvable_registry_posture
 test_home_seed_refuses_registry_delimiter_home
 test_home_seed_refuses_active_home_and_root
 test_home_seed_refuses_home_marked_for_another_id
