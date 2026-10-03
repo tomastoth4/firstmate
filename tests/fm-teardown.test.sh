@@ -268,6 +268,13 @@ case "\${1:-} \${2:-}" in
       *"headRefOid"*) printf '%s\n' '$head' ; exit 0 ;;
     esac
     ;;
+  "api repos/"*)
+    case " \$* " in
+      *"/pulls/"*" --jq .body"*) printf '%s\n' 'Body.' ; exit 0 ;;
+      *"/issues/"*"/comments"*) exit 0 ;;
+      *"/contents/"*) exit 1 ;;
+    esac
+    ;;
 esac
 echo "error: pull request not found" >&2
 exit 1

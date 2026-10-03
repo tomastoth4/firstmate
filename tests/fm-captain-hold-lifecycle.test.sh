@@ -130,7 +130,14 @@ case "${1:-} ${2:-}" in
       *) printf '%s\n' '[]' ;;
     esac
     ;;
-  "api repos/"*) printf '%s\n' '{"name":"main","protected":false}' ;;
+  "api repos/"*)
+    case " $* " in
+      *"/pulls/"*" --jq .body"*) printf '%s\n' 'Body.' ;;
+      *"/issues/"*"/comments"*) ;;
+      *"/contents/"*) exit 1 ;;
+      *) printf '%s\n' '{"name":"main","protected":false}' ;;
+    esac
+    ;;
 esac
 SH
   cat > "$home/fakebin/gh-axi" <<'SH'

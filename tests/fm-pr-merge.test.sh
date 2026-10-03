@@ -244,6 +244,12 @@ case "${1:-} ${2:-}" in
     # The required-check reads: the branch itself, and its rules read without
     # the merge-queue filter the queue reader below applies.
     case " $* " in
+      *" repos/"*"/pulls/"*" --jq .body"*)
+        printf '%s\n' 'Body.'
+        exit 0
+        ;;
+      *" repos/"*"/issues/"*"/comments"*) exit 0 ;;
+      *" repos/"*"/contents/"*) exit 1 ;;
       *" repos/"*"/commits/"*"/check-runs"*)
         case "$*" in
           *"/commits/$(cat "$FM_TEST_GH_HEAD")/check-runs"*) ;;
