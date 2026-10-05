@@ -287,9 +287,125 @@ test_spawn_tmux_window_construction() {
   pass "fm-spawn: appends windows by session-colon, pins the name, and targets the window id"
 }
 
+test_spawn_refuses_worktree_of_another_clone() {
+  local home proj other fakebin out status
+  home="$TMP_ROOT/clone-home"
+  mkdir -p "$home/data"
+  proj=$(make_repo "$TMP_ROOT/clone-proj")
+  other="$TMP_ROOT/clone-other-home/projects/clone-proj"
+  mkdir -p "$(dirname "$other")"
+  git clone -q "$(git -C "$proj" remote get-url origin)" "$other"
+  git -C "$other" worktree add -q --detach "$TMP_ROOT/clone-other-wt" >/dev/null 2>&1
+  fakebin=$(make_spawn_fakebin "$TMP_ROOT/clone-fake")
+  fm_test_fake_sleep_noop "$fakebin"
+
+  out=$(run_spawn "$home" other-clone-hh8 "$proj" "$TMP_ROOT/clone-other-wt" "$fakebin"); status=$?
+  expect_code 1 "$status" "spawn handed a worktree of another clone of the same origin should abort"
+  assert_contains "$out" "another clone of the same origin shares this Treehouse pool" \
+    "foreign-clone spawn did not name the shared pool as the cause"
+  assert_contains "$out" "$TMP_ROOT/clone-other-wt" "foreign-clone refusal did not name the handed-out worktree"
+  assert_absent "$home/state/other-clone-hh8.meta" "aborted spawn must not record meta"
+  pass "fm-spawn: refuses a pool worktree that belongs to another clone of the same origin"
+}
+
+make_secondmate_home() {
+  local home=$1 id=$2
+  mkdir -p "$home/data"
+  printf '%s\n' "$id" > "$home/.fm-secondmate-home"
+}
+
+make_treehouse_with_root_option() {
+  local fakebin=$1
+  cat > "$fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  "get --help") printf '%s\n' 'Usage:' '  treehouse get [flags]' 'Global Flags:' '      --root string   Worktree root directory' ;;
+  --version) printf '%s\n' v2.2.0 ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/treehouse"
+}
+
+sent_treehouse_root() {
+  sed -n "s/^tmux send-keys -t @spawnwid treehouse get --root '\(.*\)' Enter\$/\1/p" "$1" | tail -n 1
+}
+
+spawn_sent_root() {
+  local home=$1 id=$2 proj=$3 fakebin=$4 rec=$5 out status
+  git -C "$proj" worktree add -q --detach "$TMP_ROOT/$id-wt" >/dev/null 2>&1
+  : > "$rec"
+  out=$(run_spawn_record "$home" "$id" "$proj" "$TMP_ROOT/$id-wt" "$fakebin" "$rec"); status=$?
+  expect_code 0 "$status" "spawn $id into a genuine worktree should succeed: $out"
+  sent_treehouse_root "$rec"
+}
+
+test_spawn_secondmate_home_takes_its_own_treehouse_pool() {
+  local proj fakebin rec shared home_a home_b home_main root_a root_a_again root_b root_a_home
+  proj=$(make_repo "$TMP_ROOT/pool-proj")
+  fakebin=$(make_spawn_record_fakebin "$TMP_ROOT/pool-fake")
+  make_treehouse_with_root_option "$fakebin"
+  home_a="$TMP_ROOT/pool-home-a"
+  home_b="$TMP_ROOT/pool-home-b"
+  home_main="$TMP_ROOT/pool-home-main"
+  make_secondmate_home "$home_a" sm-a
+  make_secondmate_home "$home_b" sm-b
+  mkdir -p "$home_main/data"
+  shared="$TMP_ROOT/pool-shared-root"
+  rec="$TMP_ROOT/pool-rec.log"
+
+  root_a=$(TREEHOUSE_ROOT="$shared" spawn_sent_root "$home_a" pool-a1-ii9 "$proj" "$fakebin" "$rec")
+  case "$root_a" in
+    "$shared/.treehouse/homes/"?*) ;;
+    *) fail "secondmate home A did not take a pool root under the inherited Treehouse directory, sent '$root_a'" ;;
+  esac
+  root_a_again=$(TREEHOUSE_ROOT="$shared" spawn_sent_root "$home_a" pool-a2-ii9 "$proj" "$fakebin" "$rec")
+  [ "$root_a_again" = "$root_a" ] || fail "secondmate home A changed its pool root between spawns: '$root_a' then '$root_a_again'"
+  root_b=$(TREEHOUSE_ROOT="$shared" spawn_sent_root "$home_b" pool-b1-ii9 "$proj" "$fakebin" "$rec")
+  case "$root_b" in
+    "$shared/.treehouse/homes/"?*) ;;
+    *) fail "secondmate home B did not take a pool root under the inherited Treehouse directory, sent '$root_b'" ;;
+  esac
+  [ "$root_b" != "$root_a" ] || fail "two secondmate homes shared one pool root '$root_a'"
+  root_a_home=$(TREEHOUSE_ROOT='' spawn_sent_root "$home_a" pool-a3-ii9 "$proj" "$fakebin" "$rec")
+  case "$root_a_home" in
+    "$home_a/user-home/.treehouse/homes/"?*) ;;
+    *) fail "secondmate home A without TREEHOUSE_ROOT did not take a pool root under HOME, sent '$root_a_home'" ;;
+  esac
+
+  [ -z "$(TREEHOUSE_ROOT="$shared" spawn_sent_root "$home_main" pool-main-ii9 "$proj" "$fakebin" "$rec")" ] ||
+    fail "a home without a secondmate marker must keep Treehouse's default pool"
+  assert_grep "send-keys -t @spawnwid treehouse get Enter" "$rec" \
+    "a home without a secondmate marker must send the plain treehouse get"
+  pass "fm-spawn: each secondmate home takes worktrees from its own stable Treehouse pool root; other homes keep the default pool"
+}
+
+test_spawn_secondmate_home_refuses_treehouse_without_root_option() {
+  local home proj fakebin rec out status
+  home="$TMP_ROOT/noroot-home"
+  make_secondmate_home "$home" sm-c
+  proj=$(make_repo "$TMP_ROOT/noroot-proj")
+  git -C "$proj" worktree add -q --detach "$TMP_ROOT/noroot-wt" >/dev/null 2>&1
+  fakebin=$(make_spawn_record_fakebin "$TMP_ROOT/noroot-fake")
+  rec="$TMP_ROOT/noroot-rec.log"
+  : > "$rec"
+
+  out=$(run_spawn_record "$home" noroot-jj1 "$proj" "$TMP_ROOT/noroot-wt" "$fakebin" "$rec"); status=$?
+  expect_code 1 "$status" "secondmate-home spawn without a --root capable treehouse should abort"
+  assert_contains "$out" "has no --root option" "refusal did not name the missing treehouse option"
+  assert_contains "$out" "upgrade treehouse to 2.2.0 or later" "refusal did not name the remedy"
+  assert_no_grep "new-window" "$rec" "refused spawn must not open an endpoint"
+  assert_no_grep "treehouse get" "$rec" "refused spawn must not acquire a pool worktree"
+  assert_absent "$home/state/noroot-jj1.meta" "aborted spawn must not record meta"
+  pass "fm-spawn: a secondmate home refuses before any endpoint when treehouse cannot select its own pool"
+}
+
 test_lib_classification
 test_guard_banner
 test_bootstrap_line
 test_brief_assertion_precedes_branch
 test_spawn_isolation_abort
 test_spawn_tmux_window_construction
+test_spawn_refuses_worktree_of_another_clone
+test_spawn_secondmate_home_takes_its_own_treehouse_pool
+test_spawn_secondmate_home_refuses_treehouse_without_root_option

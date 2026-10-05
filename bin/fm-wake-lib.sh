@@ -1511,6 +1511,23 @@ fm_treehouse_pool_slot() {  # <project-dir> <worktree>
   [ "$project_common" = "$slot_common" ]
 }
 
+fm_treehouse_home_root() {  # <home>
+  local home=$1 pool_parent home_key
+  home=$(CDPATH='' cd -- "$home" 2>/dev/null && pwd -P) || return 1
+  if ! command -v fm_root_is_secondmate_home >/dev/null 2>&1; then
+    # shellcheck source=bin/fm-primary-scope-lib.sh
+    . "$FM_WAKE_LIB_DIR/fm-primary-scope-lib.sh"
+  fi
+  fm_root_is_secondmate_home "$home" || return 0
+  pool_parent=${TREEHOUSE_ROOT:-${HOME:-}}
+  case "$pool_parent" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  home_key=$(printf '%s' "$home" | git hash-object --stdin 2>/dev/null) || return 1
+  printf '%s/.treehouse/homes/%s\n' "${pool_parent%/}" "${home_key:0:12}"
+}
+
 # Slot-owner claim: which task a Treehouse pool slot currently belongs to.
 #
 # Treehouse can record ownership durably: `treehouse get --lease --lease-holder`
