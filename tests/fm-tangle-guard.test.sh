@@ -314,19 +314,6 @@ make_secondmate_home() {
   printf '%s\n' "$id" > "$home/.fm-secondmate-home"
 }
 
-make_treehouse_with_root_option() {
-  local fakebin=$1
-  cat > "$fakebin/treehouse" <<'SH'
-#!/usr/bin/env bash
-case "$*" in
-  "get --help") printf '%s\n' 'Usage:' '  treehouse get [flags]' 'Global Flags:' '      --root string   Worktree root directory' ;;
-  --version) printf '%s\n' v2.2.0 ;;
-esac
-exit 0
-SH
-  chmod +x "$fakebin/treehouse"
-}
-
 sent_treehouse_root() {
   sed -n "s/^tmux send-keys -t @spawnwid treehouse get --root '\(.*\)' Enter\$/\1/p" "$1" | tail -n 1
 }
@@ -344,7 +331,7 @@ test_spawn_secondmate_home_takes_its_own_treehouse_pool() {
   local proj fakebin rec shared home_a home_b home_main root_a root_a_again root_b root_a_home
   proj=$(make_repo "$TMP_ROOT/pool-proj")
   fakebin=$(make_spawn_record_fakebin "$TMP_ROOT/pool-fake")
-  make_treehouse_with_root_option "$fakebin"
+  fm_test_fake_treehouse_with_root_option "$fakebin"
   home_a="$TMP_ROOT/pool-home-a"
   home_b="$TMP_ROOT/pool-home-b"
   home_main="$TMP_ROOT/pool-home-main"

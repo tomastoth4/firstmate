@@ -452,6 +452,19 @@ SH
   done
 }
 
+fm_test_fake_treehouse_with_root_option() {
+  local fakebin=$1
+  cat > "$fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  "get --help") printf '%s\n' 'Usage:' '  treehouse get [flags]' 'Global Flags:' '      --root string   Worktree root directory' ;;
+  --version) printf '%s\n' v2.2.0 ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/treehouse"
+}
+
 # fm_fake_crash_injector <fakebin>
 # Drops an `fm-crash-inject <pid>` shim that a PATH fake calls to simulate a
 # hard crash of the process under test. It SIGKILLs <pid> and then returns only
