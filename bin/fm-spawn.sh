@@ -3017,7 +3017,17 @@ else
   WT=""
   BRIEF="$DATA/$ID/brief.md"
 fi
+SPAWN_TREEHOUSE_HOME_ROOT=
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+  SPAWN_TREEHOUSE_HOME_ROOT=$(fm_treehouse_home_root "$FM_HOME") || {
+    echo "error: could not resolve this secondmate home's own Treehouse pool root for $FM_HOME; TREEHOUSE_ROOT or HOME must be an absolute path" >&2
+    exit 1
+  }
+  if [ -n "$SPAWN_TREEHOUSE_HOME_ROOT" ] &&
+    ! treehouse get --help 2>&1 | grep -Eq -- '(^|[^[:alnum:]_-])--root([^[:alnum:]_-]|$)'; then
+    echo "error: this secondmate home takes task worktrees from its own Treehouse pool, so other homes' clones of the same origin never share it, but the installed treehouse ($(treehouse --version 2>/dev/null || echo 'version unknown')) has no --root option; upgrade treehouse to 2.2.0 or later (treehouse update) and spawn again" >&2
+    exit 1
+  fi
   SPAWN_TREEHOUSE_PROJECT_LOCK=$(fm_treehouse_project_lock_path "$PROJ_ABS") || {
     echo "error: could not resolve the shared Treehouse project lock for $PROJ_ABS" >&2
     exit 1
@@ -3276,6 +3286,18 @@ spawn_worktree_isolated() { # <path>
     return 1
   fi
   return 0
+}
+
+validate_spawn_worktree_of_spawning_clone() { # <source> <inspect-target>
+  local source=$1 inspect_target=$2 wt_common proj_common
+  wt_common=$(git -C "$WT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) &&
+    wt_common=$(cd "$wt_common" 2>/dev/null && pwd -P) || wt_common=
+  proj_common=$(git -C "$PROJ_ABS" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) &&
+    proj_common=$(cd "$proj_common" 2>/dev/null && pwd -P) || proj_common=
+  if [ -z "$wt_common" ] || [ "$wt_common" != "$proj_common" ]; then
+    echo "error: $source yielded '$WT', a worktree of the clone whose git dir is '${wt_common:-unresolved}', not of spawning project '$PROJ_ABS' ('${proj_common:-unresolved}'); another clone of the same origin shares this Treehouse pool, and a worker there would share that clone's branches and index with another home, so refusing to launch. Inspect target $inspect_target" >&2
+    exit 1
+  fi
 }
 
 validate_spawn_worktree() { # <source> <inspect-target>
@@ -4249,7 +4271,11 @@ elif [ "$RELAUNCH" -eq 1 ]; then
   fi
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
-  spawn_send_text_line "$WT_TARGET" 'treehouse get'
+  if [ -n "$SPAWN_TREEHOUSE_HOME_ROOT" ]; then
+    spawn_send_text_line "$WT_TARGET" "treehouse get --root $(shell_quote "$SPAWN_TREEHOUSE_HOME_ROOT")"
+  else
+    spawn_send_text_line "$WT_TARGET" 'treehouse get'
+  fi
 
   # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
   # Target the stable window id, not the name: if the name is ever lost (e.g. an
@@ -4309,6 +4335,7 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   fi
 
   validate_spawn_worktree "treehouse get" "$T"
+  validate_spawn_worktree_of_spawning_clone "treehouse get" "$T"
 
   # Claim the pool slot for this task. The interactive `treehouse get` sent to
   # the pane above records only a process lease (Treehouse's durable
