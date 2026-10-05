@@ -59,6 +59,7 @@ set -u
 unset CDPATH GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
 
 SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
+OUTWARD_TEXT_LINT="$(dirname "$SELF")/fm-outward-text-lint.sh"
 
 usage() {
   cat >&2 <<'EOF'
@@ -230,6 +231,7 @@ install_hooks() {
 #!/usr/bin/env bash
 set -u
 $(quote_for_hook "$SELF") "\$1" || exit \$?
+$(quote_for_hook "$OUTWARD_TEXT_LINT") --commit-msg --label 'commit message' "\$1" || exit \$?
 $(runtime_chain_body "$hooks_dir")
 EOF
 

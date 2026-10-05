@@ -24,6 +24,12 @@ case " $* " in
   *" repos/o/r/pulls/7 --jq .body "*)
     cat "${FM_PRG_BODY:?}" 2>/dev/null || exit 1
     ;;
+  *" repos/o/r/pulls/7 --jq .title "*)
+    printf '%s\n' "${FM_PRG_TITLE:-a clean title}"
+    ;;
+  *" repos/o/r/pulls/7 --jq .user.login "*)
+    printf 'worker\n'
+    ;;
   *" repos/o/r/issues/7/comments "*)
     if [ -n "${FM_PRG_COMMENTS:-}" ]; then cat "$FM_PRG_COMMENTS"; fi
     ;;
@@ -64,7 +70,7 @@ test_grep_fallback_without_rg() {
   local norg out rc tool
   norg="$TMP_ROOT/no-rg-bin"
   mkdir -p "$norg"
-  for tool in bash grep base64 mktemp rm cp tr cat; do
+  for tool in bash grep base64 mktemp rm cp mv sed tr cat dirname; do
     ln -s "$(command -v "$tool")" "$norg/$tool"
   done
   local body
@@ -169,6 +175,40 @@ test_local_clone_template_used() {
   pass "a template in the exported local clone is found and enforced"
 }
 
+test_private_path_refused() {
+  local body out rc
+  body=$(write_fixture body-path.md 'Reproduced in /home/someone/work/repo and fixed.')
+  out=$(FM_PRG_BODY=$body run_guard 2>&1) && rc=0 || rc=$?
+  assert_refused 'RULE P' "a private machine path in a description" "$out" "$rc"
+  pass "a private machine path in a description is refused"
+}
+
+test_secret_token_refused_without_echo() {
+  local body out rc
+  body=$(write_fixture body-token.md 'Open https://example.test/order#orderLinkToken=abcdef1234567890 to repro.')
+  out=$(FM_PRG_BODY=$body run_guard 2>&1) && rc=0 || rc=$?
+  assert_refused 'RULE T' "a secret token in a description" "$out" "$rc"
+  assert_not_contains "$out" 'abcdef1234567890' "the refusal echoed the secret token"
+  pass "a secret token in a description is refused without echoing it"
+}
+
+test_title_vocabulary_refused() {
+  local body out rc
+  body=$(write_fixture body-title.md 'plain description')
+  out=$(FM_PRG_BODY=$body FM_PRG_TITLE='Apply the Captain decision' run_guard 2>&1) && rc=0 || rc=$?
+  assert_refused 'RULE A' "forbidden vocabulary in a title" "$out" "$rc"
+  pass "forbidden vocabulary in a title is refused"
+}
+
+test_author_comment_vocabulary_refused() {
+  local body comments out rc
+  body=$(write_fixture body-comment-vocab.md 'plain description')
+  comments=$(write_fixture comments-vocab.md 'handing this to the first mate')
+  out=$(FM_PRG_BODY=$body FM_PRG_COMMENTS=$comments run_guard 2>&1) && rc=0 || rc=$?
+  assert_refused 'RULE A' "forbidden vocabulary in an author comment" "$out" "$rc"
+  pass "forbidden vocabulary in an author comment is refused"
+}
+
 test_missing_required_heading_refused() {
   local body out rc
   body=$(write_fixture body-missing.md '## Summary' '' 'Does the thing.')
@@ -268,6 +308,10 @@ test_local_clone_template_used
 test_forbidden_vocabulary_refused
 test_forbidden_vocabulary_without_template_refused
 test_template_decode_failure_refused
+test_private_path_refused
+test_secret_token_refused_without_echo
+test_title_vocabulary_refused
+test_author_comment_vocabulary_refused
 test_missing_required_heading_refused
 test_invented_extra_section_refused
 test_reordered_sections_refused

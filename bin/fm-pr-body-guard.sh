@@ -45,6 +45,7 @@ case "$NUMBER" in
 esac
 command -v gh >/dev/null 2>&1 \
   || { echo "error: fm-pr-body-guard requires gh on PATH" >&2; exit 1; }
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 
 # Matching prefers rg and falls back to grep -in, which every runner has; both
 # print the same N:text shape the diagnostics relay verbatim.
@@ -62,6 +63,8 @@ trap 'exit 1' HUP INT TERM
 
 BODY_FILE="$TMP_DIR/body"
 COMMENTS_FILE="$TMP_DIR/comments"
+TITLE_FILE="$TMP_DIR/title"
+AUTHOR_COMMENTS_FILE="$TMP_DIR/author-comments"
 TEMPLATE_FILE="$TMP_DIR/template"
 
 # Rule fetches: the description, every comment body, and the repository's own
@@ -81,14 +84,25 @@ if ! gh api "repos/$OWNER/$REPO/issues/$NUMBER/comments" --paginate --jq '.[].bo
   exit 1
 fi
 
-# RULE A: forbidden vocabulary in the description. Print every offending line
-# so the caller sees exactly what leaked.
-RULE_A_HITS=$(match_ci_lines 'captain|firstmate|first mate' "$BODY_FILE")
-if [ -n "$RULE_A_HITS" ]; then
-  echo "RULE A: forbidden vocabulary leaked into the PR description (captain / firstmate / first mate):" >&2
-  printf '%s\n' "$RULE_A_HITS" >&2
+if ! gh api "repos/$OWNER/$REPO/pulls/$NUMBER" --jq .title > "$TITLE_FILE" 2>/dev/null; then
+  echo "error: could not fetch the pull request title for $OWNER/$REPO#$NUMBER" >&2
   exit 1
 fi
+if ! PR_AUTHOR=$(gh api "repos/$OWNER/$REPO/pulls/$NUMBER" --jq .user.login 2>/dev/null); then
+  echo "error: could not fetch the pull request author for $OWNER/$REPO#$NUMBER" >&2
+  exit 1
+fi
+if ! gh api "repos/$OWNER/$REPO/issues/$NUMBER/comments" --paginate \
+  --jq ".[] | select(.user.login == \"$PR_AUTHOR\") | .body" > "$AUTHOR_COMMENTS_FILE" 2>/dev/null; then
+  echo "error: could not fetch the pull request author comments for $OWNER/$REPO#$NUMBER" >&2
+  exit 1
+fi
+
+for ARTIFACT in "title:$TITLE_FILE" "description:$BODY_FILE" "author comments:$AUTHOR_COMMENTS_FILE"; do
+  if ! "$SCRIPT_DIR/fm-outward-text-lint.sh" --label "PR ${ARTIFACT%%:*}" "${ARTIFACT#*:}"; then
+    exit 1
+  fi
+done
 
 # RULE C: no pipeline tooling content in the description or in any comment.
 pipeline_tooling_lines() { # <file>: print the marker lines the rule forbids

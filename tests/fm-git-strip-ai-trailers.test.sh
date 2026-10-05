@@ -356,7 +356,45 @@ test_strip_msgfile_alone_does_not_rewrite_author_fields() {
   pass "commit-msg file mode strips the trailer and keeps the subject"
 }
 
+test_commit_message_with_forbidden_text_is_refused() {
+  local repo hooks before out rc
+  repo="$TMP_ROOT/lint-refuse"
+  make_repo "$repo"
+  hooks="$TMP_ROOT/hooks-lint-refuse"
+  "$STRIP" install "$hooks" "$repo" || fail "install should succeed"
+  before=$(git -C "$repo" rev-parse HEAD)
+  printf 'note\n' >>"$repo/README.md"
+  git -C "$repo" add README.md
+  out=$(with_hooks_env "$hooks" git -C "$repo" commit -q -m 'fix: apply the captain decision' 2>&1) && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || fail "a commit message naming the forbidden word was accepted"
+  assert_contains "$out" 'RULE A' "the refusal did not name the rule"
+  [ "$(git -C "$repo" rev-parse HEAD)" = "$before" ] || fail "the refused commit moved HEAD"
+  out=$(with_hooks_env "$hooks" git -C "$repo" commit -q -m 'docs: see /home/someone/notes' 2>&1) && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || fail "a commit message with a private machine path was accepted"
+  assert_contains "$out" 'RULE P' "the path refusal did not name the rule"
+  printf '%s\n' 'fix: clean subject' '' 'The first mate reviewed it.' > "$TMP_ROOT/lint-body.txt"
+  out=$(with_hooks_env "$hooks" git -C "$repo" commit -q -F "$TMP_ROOT/lint-body.txt" 2>&1) && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || fail "a forbidden phrase in the commit body was accepted"
+  assert_contains "$out" 'line 3' "the refusal did not name the offending body line"
+  pass "a commit message with forbidden text is refused and HEAD does not move"
+}
+
+test_clean_commit_message_passes_the_lint() {
+  local repo hooks
+  repo="$TMP_ROOT/lint-clean"
+  make_repo "$repo"
+  hooks="$TMP_ROOT/hooks-lint-clean"
+  "$STRIP" install "$hooks" "$repo" || fail "install should succeed"
+  printf 'note\n' >>"$repo/README.md"
+  git -C "$repo" add README.md
+  with_hooks_env "$hooks" git -C "$repo" commit -q -m 'fix: handle a rename in docs/notes' ||
+    fail "a clean commit message was refused"
+  pass "a clean commit message still commits"
+}
+
 test_cursor_trailer_does_not_reach_the_commit_object
+test_commit_message_with_forbidden_text_is_refused
+test_clean_commit_message_passes_the_lint
 test_human_coauthor_is_kept
 test_human_at_a_vendor_domain_is_kept
 test_hook_manager_cannot_displace_the_strip

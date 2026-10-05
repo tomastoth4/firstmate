@@ -248,6 +248,14 @@ case "${1:-} ${2:-}" in
         printf '%s\n' 'Body.'
         exit 0
         ;;
+      *" repos/"*"/pulls/"*" --jq .title"*)
+        printf '%s\n' 'Title.'
+        exit 0
+        ;;
+      *" repos/"*"/pulls/"*" --jq .user.login"*)
+        printf '%s\n' 'worker'
+        exit 0
+        ;;
       *" repos/"*"/issues/"*"/comments"*) exit 0 ;;
       *" repos/"*"/contents/"*) exit 1 ;;
       *" repos/"*"/commits/"*"/check-runs"*)
